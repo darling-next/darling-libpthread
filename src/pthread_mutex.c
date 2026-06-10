@@ -770,7 +770,14 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
 					newseq.ugenval, oldtid, mutex->mtxopts.value);
 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
-		} while (updateval == (uint32_t)-1);
+		// Darling: the emulated BSD syscall returns an interrupted/errored
+		// wait (e.g. EINTR) as a *negative* value directly in the return
+		// register, not as -1 + errno. Retry the kernel wait on any such
+		// negative return so the kw_intr interrupted-wakeup redirection is
+		// consumed; exiting here would mistake the error for a successful
+		// acquisition and strand a contended-mutex handoff. See
+		// libsystem_kernel psynch_cvwait.c / pthread_cond.c for the analysis.
+		} while ((int32_t)updateval < 0);
 
 		// returns 0 on succesful update; in firstfit it may fail with 1
 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
@@ -1411,7 +1418,10 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
 					uval, 0, 0);
 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
-		} while (uval == (uint32_t)-1);
+		// Darling: retry on a negative BSD-error return (EINTR delivered
+		// directly in the return register, not -1 + errno). See the
+		// fairshare wait loop above for the full rationale.
+		} while ((int32_t)uval < 0);
 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
 

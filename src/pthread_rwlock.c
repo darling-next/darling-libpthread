@@ -644,6 +644,12 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
 		}
 		if (updateval == (uint32_t)-1) {
 			res = errno;
+		} else if ((int32_t)updateval < 0) {
+			// Darling: the emulated BSD syscall returns an interrupted/errored
+			// wait as a negative value directly in the return register, not as
+			// -1 + errno. Decode it so an EINTR retries the kernel wait instead
+			// of being mistaken for a successful rwlock updateval.
+			res = -(int32_t)updateval;
 		} else {
 			res = 0;
 		}
