@@ -52,6 +52,7 @@
 
 #include "resolver.h"
 #include "internal.h"
+#include "psynch_kernel_return.h"
 #include "kern/kern_trace.h"
 
 #ifndef BUILDING_VARIANT /* [ */
@@ -766,16 +767,16 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
 	do {
 		uint32_t updateval;
-		int psynch_err;
+		_pthread_psynch_kernel_return_t psynch_ret;
 		do {
 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
 					newseq.ugenval, oldtid, mutex->mtxopts.value);
 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
-			psynch_err = _pthread_psynch_kernel_return_error(updateval, NULL);
-			if (psynch_err && psynch_err != EINTR) {
-				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
+			psynch_ret = _pthread_psynch_kernel_return_decode(updateval);
+			if (psynch_ret.base_error && psynch_ret.base_error != EINTR) {
+				PTHREAD_INTERNAL_CRASH(psynch_ret.base_error, "__psynch_mutexwait failed");
 			}
-		} while (psynch_err == EINTR);
+		} while (psynch_ret.base_error == EINTR);
 
 		// returns 0 on succesful update; in firstfit it may fail with 1
 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
@@ -941,7 +942,9 @@ _pthread_mutex_fairshare_unlock_drop(pthread_mutex_t *mutex, mutex_seq newseq,
 
 	PTHREAD_TRACE(psynch_mutex_uunlock | DBG_FUNC_END, mutex, updateval, 0, 0);
 
-	res = _pthread_psynch_kernel_return_error(updateval, NULL);
+	_pthread_psynch_kernel_return_t psynch_ret =
+			_pthread_psynch_kernel_return_decode(updateval);
+	res = psynch_ret.base_error;
 	if (res == EINTR) {
 		res = 0;
 	}
@@ -1313,7 +1316,9 @@ _pthread_mutex_firstfit_wake(pthread_mutex_t *mutex, mutex_seq newseq,
 	int res = __psynch_mutexdrop(mutex, newseq.lgenval, newseq.ugenval, 0,
 			flags);
 
-	res = _pthread_psynch_kernel_return_error((uint32_t)res, NULL);
+	_pthread_psynch_kernel_return_t psynch_ret =
+			_pthread_psynch_kernel_return_decode((uint32_t)res);
+	res = psynch_ret.base_error;
 	if (res == EINTR) {
 		res = 0;
 	}
@@ -1401,7 +1406,7 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
 	do {
 		uint32_t uval;
-		int psynch_err;
+		_pthread_psynch_kernel_return_t psynch_ret;
 		do {
 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_START, mutex,
 					newseq.lgenval, newseq.ugenval, mutex->mtxopts.value);
@@ -1410,11 +1415,11 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
 					uval, 0, 0);
 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
-			psynch_err = _pthread_psynch_kernel_return_error(uval, NULL);
-			if (psynch_err && psynch_err != EINTR) {
-				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
+			psynch_ret = _pthread_psynch_kernel_return_decode(uval);
+			if (psynch_ret.base_error && psynch_ret.base_error != EINTR) {
+				PTHREAD_INTERNAL_CRASH(psynch_ret.base_error, "__psynch_mutexwait failed");
 			}
-		} while (psynch_err == EINTR);
+		} while (psynch_ret.base_error == EINTR);
 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
 

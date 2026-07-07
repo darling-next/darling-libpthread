@@ -160,29 +160,6 @@ _pthread_lock_unlock(os_unfair_lock_t lock, mach_port_t mts)
 #undef  errno
 #define errno          (*_pthread_errno_address_direct())
 
-OS_ALWAYS_INLINE
-static inline int
-_pthread_psynch_kernel_return_error(uint32_t updateval, uint32_t *status)
-{
-	if (updateval == (uint32_t)-1) {
-		return errno;
-	}
-	if ((int32_t)updateval < 0) {
-		return -(int32_t)updateval;
-	}
-	if (status) {
-		*status = updateval;
-	}
-	return 0;
-}
-
-OS_ALWAYS_INLINE
-static inline int
-_pthread_psynch_kernel_error_code(int err)
-{
-	return err & 0xff;
-}
-
 #define _pthread_tsd_slot(th, name) \
 		(*(_PTHREAD_TSD_SLOT_##name##_TYPE *)(uintptr_t *)&(th)->tsd[_PTHREAD_TSD_SLOT_##name])
 
