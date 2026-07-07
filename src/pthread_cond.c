@@ -633,17 +633,10 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
 		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
 	}
 
-	// Darling: the emulated BSD psynch_cvwait syscall returns its BSD error
-	// (EINTR/ETIMEDOUT, possibly OR'd with the cvar ECVCLEARED/ECVPREPOST
-	// status bits) as a *negative* value directly in the return register, not
-	// as the -1 + errno that upstream macOS uses. Accept both: -1 means read
-	// errno; any other negative value carries the (augmented) error itself.
-	// Without this decode libpthread mistakes the error for a successful
-	// updateval, skips the EINTR/prepost recovery, and orphan preposts strand
-	// a later condvar wakeup.
-	if ((int32_t)updateval < 0) {
-		int err = updateval == (uint32_t)-1 ? errno : -(int32_t)updateval;
-		switch (err & 0xff) {
+	uint32_t psynch_status = 0;
+	int psynch_err = _pthread_psynch_kernel_return_error(updateval, &psynch_status);
+	if (psynch_err) {
+		switch (_pthread_psynch_kernel_error_code(psynch_err)) {
 		case ETIMEDOUT:
 			res = ETIMEDOUT;
 			break;
@@ -657,12 +650,12 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
 		}
 
 		// add unlock ref to show one less waiter
-		_pthread_cond_updateval(cond, mutex, err, 0);
-	} else if (updateval != 0) {
+		_pthread_cond_updateval(cond, mutex, psynch_err, 0);
+	} else if (psynch_status != 0) {
 		// Successful wait
 		// The return due to prepost and might have bit states
 		// update S and return for prepo if needed
-		_pthread_cond_updateval(cond, mutex, 0, updateval);
+		_pthread_cond_updateval(cond, mutex, 0, psynch_status);
 	}
 
 	pthread_mutex_lock(mutex);

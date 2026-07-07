@@ -766,18 +766,16 @@ _pthread_mutex_fairshare_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
 	do {
 		uint32_t updateval;
+		int psynch_err;
 		do {
 			updateval = __psynch_mutexwait(mutex, newseq.lgenval,
 					newseq.ugenval, oldtid, mutex->mtxopts.value);
 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
-		// Darling: the emulated BSD syscall returns an interrupted/errored
-		// wait (e.g. EINTR) as a *negative* value directly in the return
-		// register, not as -1 + errno. Retry the kernel wait on any such
-		// negative return so the kw_intr interrupted-wakeup redirection is
-		// consumed; exiting here would mistake the error for a successful
-		// acquisition and strand a contended-mutex handoff. See
-		// libsystem_kernel psynch_cvwait.c / pthread_cond.c for the analysis.
-		} while ((int32_t)updateval < 0);
+			psynch_err = _pthread_psynch_kernel_return_error(updateval, NULL);
+			if (psynch_err && psynch_err != EINTR) {
+				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
+			}
+		} while (psynch_err == EINTR);
 
 		// returns 0 on succesful update; in firstfit it may fail with 1
 	} while (_pthread_mutex_fairshare_lock_updatebits(mutex, selfid) == 1);
@@ -943,19 +941,15 @@ _pthread_mutex_fairshare_unlock_drop(pthread_mutex_t *mutex, mutex_seq newseq,
 
 	PTHREAD_TRACE(psynch_mutex_uunlock | DBG_FUNC_END, mutex, updateval, 0, 0);
 
-	if (updateval == (uint32_t)-1) {
-		res = errno;
-
-		if (res == EINTR) {
-			res = 0;
-		}
-		if (res != 0) {
-			PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
-		}
-		return res;
+	res = _pthread_psynch_kernel_return_error(updateval, NULL);
+	if (res == EINTR) {
+		res = 0;
+	}
+	if (res != 0) {
+		PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
 	}
 
-	return 0;
+	return res;
 }
 
 OS_NOINLINE
@@ -1319,17 +1313,14 @@ _pthread_mutex_firstfit_wake(pthread_mutex_t *mutex, mutex_seq newseq,
 	int res = __psynch_mutexdrop(mutex, newseq.lgenval, newseq.ugenval, 0,
 			flags);
 
-	if (res == -1) {
-		res = errno;
-		if (res == EINTR) {
-			res = 0;
-		}
-		if (res != 0) {
-			PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
-		}
-		return res;
+	res = _pthread_psynch_kernel_return_error((uint32_t)res, NULL);
+	if (res == EINTR) {
+		res = 0;
 	}
-	return 0;
+	if (res != 0) {
+		PTHREAD_INTERNAL_CRASH(res, "__psynch_mutexdrop failed");
+	}
+	return res;
 }
 
 OS_NOINLINE
@@ -1410,6 +1401,7 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 	PLOCKSTAT_MUTEX_BLOCK((pthread_mutex_t *)mutex);
 	do {
 		uint32_t uval;
+		int psynch_err;
 		do {
 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_START, mutex,
 					newseq.lgenval, newseq.ugenval, mutex->mtxopts.value);
@@ -1418,10 +1410,11 @@ _pthread_mutex_firstfit_lock_wait(pthread_mutex_t *mutex, mutex_seq newseq,
 			PTHREAD_TRACE(psynch_ffmutex_wait | DBG_FUNC_END, mutex,
 					uval, 0, 0);
 			oldtid = os_atomic_load_wide(tidaddr, relaxed);
-		// Darling: retry on a negative BSD-error return (EINTR delivered
-		// directly in the return register, not -1 + errno). See the
-		// fairshare wait loop above for the full rationale.
-		} while ((int32_t)uval < 0);
+			psynch_err = _pthread_psynch_kernel_return_error(uval, NULL);
+			if (psynch_err && psynch_err != EINTR) {
+				PTHREAD_INTERNAL_CRASH(psynch_err, "__psynch_mutexwait failed");
+			}
+		} while (psynch_err == EINTR);
 	} while (!_pthread_mutex_firstfit_lock_updatebits(mutex, selfid, &newseq));
 	PLOCKSTAT_MUTEX_BLOCKED((pthread_mutex_t *)mutex, BLOCK_SUCCESS_PLOCKSTAT);
 
@@ -1905,4 +1898,3 @@ pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
 	attr->sig = _PTHREAD_NO_SIG;
 	return 0;
 }
-
