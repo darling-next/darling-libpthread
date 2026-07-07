@@ -642,17 +642,7 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
 			updateval = __psynch_rw_wrlock(rwlock, newseq.lcntval,
 					newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
 		}
-		if (updateval == (uint32_t)-1) {
-			res = errno;
-		} else if ((int32_t)updateval < 0) {
-			// Darling: the emulated BSD syscall returns an interrupted/errored
-			// wait as a negative value directly in the return register, not as
-			// -1 + errno. Decode it so an EINTR retries the kernel wait instead
-			// of being mistaken for a successful rwlock updateval.
-			res = -(int32_t)updateval;
-		} else {
-			res = 0;
-		}
+		res = _pthread_psynch_kernel_return_error(updateval, NULL);
 	} while (res == EINTR);
 
 	if (res == 0) {
@@ -895,9 +885,8 @@ _pthread_rwlock_unlock_drop(pthread_rwlock_t *rwlock, rwlock_seq oldseq,
 	do {
 		updateval = __psynch_rw_unlock(rwlock, oldseq.lcntval,
 				newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
-		if (updateval == (uint32_t)-1) {
-			res = errno;
-		} else {
+		res = _pthread_psynch_kernel_return_error(updateval, NULL);
+		if (res == 0) {
 			res = 0;
 			RWLOCK_DEBUG_SEQ(wakeup, rwlock, oldseq, newseq, updateval,
 					RWLOCK_SEQ_LSU);
@@ -1059,4 +1048,3 @@ pthread_rwlock_unlock(pthread_rwlock_t *rwlock)
 
 	return 0;
 }
-
