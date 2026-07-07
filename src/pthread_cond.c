@@ -50,6 +50,7 @@
 
 #include "resolver.h"
 #include "internal.h"
+#include "psynch_kernel_return.h"
 #include <sys/time.h>	      /* For struct timespec and getclock(). */
 
 #ifdef PLOCKSTAT
@@ -633,10 +634,10 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
 		updateval = __psynch_cvwait(cond, cvlsgen, ucntval, (pthread_mutex_t *)npmtx, mugen, flags, (int64_t)(then->tv_sec), (int32_t)(then->tv_nsec));
 	}
 
-	uint32_t psynch_status = 0;
-	int psynch_err = _pthread_psynch_kernel_return_error(updateval, &psynch_status);
-	if (psynch_err) {
-		switch (_pthread_psynch_kernel_error_code(psynch_err)) {
+	_pthread_psynch_kernel_return_t psynch_ret =
+			_pthread_psynch_kernel_return_decode(updateval);
+	if (psynch_ret.base_error) {
+		switch (psynch_ret.base_error) {
 		case ETIMEDOUT:
 			res = ETIMEDOUT;
 			break;
@@ -650,12 +651,12 @@ _pthread_psynch_cond_wait(pthread_cond_t *cond,
 		}
 
 		// add unlock ref to show one less waiter
-		_pthread_cond_updateval(cond, mutex, psynch_err, 0);
-	} else if (psynch_status != 0) {
+		_pthread_cond_updateval(cond, mutex, psynch_ret.raw_error, 0);
+	} else if (psynch_ret.updateval != 0) {
 		// Successful wait
 		// The return due to prepost and might have bit states
 		// update S and return for prepo if needed
-		_pthread_cond_updateval(cond, mutex, 0, psynch_status);
+		_pthread_cond_updateval(cond, mutex, 0, psynch_ret.updateval);
 	}
 
 	pthread_mutex_lock(mutex);

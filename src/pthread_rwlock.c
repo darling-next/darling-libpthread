@@ -57,6 +57,7 @@
 
 #include "resolver.h"
 #include "internal.h"
+#include "psynch_kernel_return.h"
 
 #ifdef PLOCKSTAT
 #include "plockstat.h"
@@ -642,7 +643,9 @@ _pthread_rwlock_lock_wait(pthread_rwlock_t *rwlock, bool readlock,
 			updateval = __psynch_rw_wrlock(rwlock, newseq.lcntval,
 					newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
 		}
-		res = _pthread_psynch_kernel_return_error(updateval, NULL);
+		_pthread_psynch_kernel_return_t psynch_ret =
+				_pthread_psynch_kernel_return_decode(updateval);
+		res = psynch_ret.base_error;
 	} while (res == EINTR);
 
 	if (res == 0) {
@@ -885,7 +888,9 @@ _pthread_rwlock_unlock_drop(pthread_rwlock_t *rwlock, rwlock_seq oldseq,
 	do {
 		updateval = __psynch_rw_unlock(rwlock, oldseq.lcntval,
 				newseq.ucntval, newseq.rw_seq, rwlock->rw_flags);
-		res = _pthread_psynch_kernel_return_error(updateval, NULL);
+		_pthread_psynch_kernel_return_t psynch_ret =
+				_pthread_psynch_kernel_return_decode(updateval);
+		res = psynch_ret.base_error;
 		if (res == 0) {
 			res = 0;
 			RWLOCK_DEBUG_SEQ(wakeup, rwlock, oldseq, newseq, updateval,
