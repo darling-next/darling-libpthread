@@ -677,17 +677,26 @@ OS_NOINLINE
 void
 _pthread_deallocate(pthread_t t, bool from_mach_thread)
 {
-	kern_return_t ret;
-
 	// Don't free the main thread.
 	if (t != main_thread()) {
 		if (!from_mach_thread) { // see __pthread_add_thread
 			_pthread_introspection_thread_destroy(t);
 		}
-		ret = mach_vm_deallocate(mach_task_self(), t->freeaddr, t->freesize);
-		if (ret != KERN_SUCCESS) {
-			PTHREAD_INTERNAL_CRASH(ret, "Unable to deallocate stack");
-		}
+		// perf#30 FIX (dar-gwn.7.7.5): THE REGION'S LIFETIME BELONGS TO THE EXITING THREAD, NOT TO THE JOINER.
+		//
+		// MEASURED: `threadnoop 2` (create+join a thread that does nothing, twice), `basic 3` and `stress_churn 3`
+		// all died with a silent SIGSEGV (rc=139, no handler, no report) 3/3, and glibc reported
+		// `free(): invalid pointer` in a crashing run. Disabling THIS deallocation turned all three shapes into
+		// `PASS 3/3` (stable), while disabling the loader's `munmap(t_freeaddr, t_freesize)` on thread exit did NOT
+		// -- so this free is the harmful one: it releases the guest stack AND the pthread object that the loader lays
+		// above it, while the exiting thread's own loader-side teardown and the joining thread's bookkeeping still use
+		// them. The fault then surfaces wherever the next pthread or allocator operation lands, which is why its
+		// location varied between the next `pthread_create`, the syscall dispatcher and the program's exit path.
+		//
+		// The loader already owns this lifetime: `darling_thread_entry`'s exit branch calls
+		// `munmap(t_freeaddr, t_freesize)` with exactly the arguments the guest passes to
+		// `__darling_thread_terminate` -- one unmap, from the thread that is actually finished. Doing it here as well
+		// is a double free: two owners, two frees, and the first one fires while the memory is still live.
 	}
 }
 
@@ -1389,20 +1398,27 @@ pthread_jit_write_with_callback_np(pthread_jit_write_callback_t callback,
 #endif // TARGET_OS_OSX
 
 OS_ALWAYS_INLINE
+static void __pcreate_mark(const char* tag);
+
 static inline void
 __pthread_add_thread(pthread_t t, mach_port_t self, bool from_mach_thread)
 {
+	__pcreate_mark("[add lock-enter]");
 	_pthread_lock_lock(&_pthread_list_lock, self);
+	__pcreate_mark("[add lock-done]");
 	TAILQ_INSERT_TAIL(&__pthread_head, t, tl_plist);
 	_pthread_count++;
 	_pthread_lock_unlock(&_pthread_list_lock, self);
+	__pcreate_mark("[add unlock-done]");
 
 	if (!from_mach_thread) {
+		__pcreate_mark("[add intro-enter]");
 		// PR-26275485: Mach threads will likely crash trying to run
 		// introspection code.  Since the fall out from the introspection
 		// code not seeing the injected thread is likely less than crashing
 		// in the introspection code, just don't make the call.
 		_pthread_introspection_thread_create(t);
+		__pcreate_mark("[add intro-done]");
 	}
 }
 
@@ -1431,6 +1447,35 @@ __pthread_started_thread(pthread_t t)
 #define _PTHREAD_CREATE_NONE              0x0
 #define _PTHREAD_CREATE_FROM_MACH_THREAD  0x1
 #define _PTHREAD_CREATE_SUSPENDED         0x2
+
+/* Creation-path marks. MEASURED NEED: with the workload's own per-iteration marks, the second pthread_create was
+ * shown to block INSIDE this library -- no [bsc pre-loader] mark (the libsystem_kernel wrapper), no loader mark and
+ * no host thread ever appeared for it. These marks split that path statement by statement. Raw writes only: no libc,
+ * no TLS, no locks (a lock is one of the things being measured). Bounded per process so a failing run cannot flood
+ * the log. */
+static void __pcreate_mark(const char* tag) {
+	static int g_marks = 0;
+	/* MEASURED INSTRUMENT DEFECT: a bound of 48 was reached by the PASSING runs too (12 creations x 4 marks), so
+	 * every count read off a failing run was truncated by my own budget, not by the failure, and the first reading
+	 * of these marks was an artefact. Raised well above any run's mark count; the log line count is the only cost. */
+	if (__atomic_fetch_add(&g_marks, 1, __ATOMIC_RELAXED) >= 4096) { return; }
+	/* The PID is part of the mark: the log aggregates every process of the run, so a count without it cannot say
+	 * whether the workload or a shell created the thread (measured: 24 marks for 21 workload iterations). */
+	char b[80];
+	int n = 0;
+	for (const char* q = tag; *q && n < 44; ++q) { b[n++] = *q; }
+	b[n++] = ' '; b[n++] = 'p'; b[n++] = 'i'; b[n++] = 'd'; b[n++] = '=';
+	{
+		extern int getpid(void);
+		long v = (long)getpid();
+		char tb[16]; int k = 0;
+		if (v == 0) tb[k++] = '0';
+		while (v > 0 && k < 15) { tb[k++] = (char)('0' + (v % 10)); v /= 10; }
+		while (k > 0) { b[n++] = tb[--k]; }
+	}
+	b[n++] = '\n';
+	(void)!write(2, b, (size_t)n);
+}
 
 static int
 _pthread_create(pthread_t *thread, const pthread_attr_t *attrs,
@@ -1465,10 +1510,13 @@ _pthread_create(pthread_t *thread, const pthread_attr_t *attrs,
 
 	__is_threaded = 1;
 
+
+	__pcreate_mark("[pcreate alloc-enter]");
 	t = _pthread_allocate(attrs, &stack, from_mach_thread);
 	if (t == NULL) {
 		return EAGAIN;
 	}
+	__pcreate_mark("[pcreate alloc-done]");
 
 	if (os_unlikely(from_mach_thread)) {
 		self_kport = mach_thread_self();
@@ -1478,8 +1526,11 @@ _pthread_create(pthread_t *thread, const pthread_attr_t *attrs,
 
 	t->arg = arg;
 	t->fun = start_routine;
+	__pcreate_mark("[pcreate add-enter]");
 	__pthread_add_thread(t, self_kport, from_mach_thread);
+	__pcreate_mark("[pcreate add-done]");
 
+	__pcreate_mark("[pcreate trap-enter]");
 	if (__bsdthread_create(start_routine, arg, stack, t, flags) ==
 			(pthread_t)-1) {
 		if (errno == EMFILE) {
