@@ -55,6 +55,11 @@ set(DYLIB_INSTALL_NAME "/usr/lib/system/libsystem_pthread.dylib")
 add_circular(system_pthread FAT
 	SOURCES
 		${pthread_sources}
+	# Apple's pthread.xcconfig sets ALIAS_LDFLAGS =
+	# -Wl,-alias_list,$(SRCROOT)/xcodescripts/pthread.aliases and puts it in OTHER_LDFLAGS.  Without
+	# it the aliases the file names (_pthread_yield_np, _cthread_yield, __pthread_is_threaded) are
+	# declared by the public header but never exported by the built dylib.
+	LINK_FLAGS "-Wl,-alias_list,${CMAKE_CURRENT_SOURCE_DIR}/../xcodescripts/pthread.aliases"
 	SIBLINGS
 		platform system_kernel system_dyld system_c
 )
