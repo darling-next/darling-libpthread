@@ -2250,6 +2250,11 @@ pthread_stack_frame_decode_np(uintptr_t frame_addr, uintptr_t *return_addr)
 {
 	struct frame_data *frame = (struct frame_data *)frame_addr;
 
+#if __has_feature(ptrauth_calls)
+	/* Swift async contexts can be signed data pointers from an OS frame. */
+	frame = ptrauth_strip(frame, ptrauth_key_process_dependent_data);
+#endif
+
 	if (return_addr) {
 #if __has_feature(ptrauth_calls)
 		*return_addr = (uintptr_t)ptrauth_strip((void *)frame->ret_addr,
@@ -2259,11 +2264,17 @@ pthread_stack_frame_decode_np(uintptr_t frame_addr, uintptr_t *return_addr)
 #endif /* __has_feature(ptrauth_calls) */
 	}
 
+	uintptr_t next_frame = frame->frame_addr_next;
 #if __has_feature(ptrauth_calls)
-	return (uintptr_t)ptrauth_strip((void *)frame->frame_addr_next,
+	next_frame = (uintptr_t)ptrauth_strip((void *)next_frame,
 			ptrauth_key_frame_pointer);
 #endif /* __has_feature(ptrauth_calls) */
-	return (uintptr_t)frame->frame_addr_next;
+#if __LP64__
+	/* Apple libpthread strips ABI tags, including Swift async frame tags,
+	 * from the otherwise-zero top byte of userspace frame pointers. */
+	next_frame &= ~0xFF00000000000000ul;
+#endif
+	return next_frame;
 }
 
 #pragma mark pthread workqueue support routines
