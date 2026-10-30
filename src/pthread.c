@@ -1454,6 +1454,16 @@ __pthread_started_thread(pthread_t t)
  * no TLS, no locks (a lock is one of the things being measured). Bounded per process so a failing run cannot flood
  * the log. */
 static void __pcreate_mark(const char* tag) {
+	/* OFF BY DEFAULT. These marks are diagnostics for the thread-creation path, and they used to land on fd 2 of
+	 * every guest process that created a thread -- the workload's own stderr. MEASURED: autoconf's link probe in the
+	 * pinned Ruby 3.4.8 build returned 0 but its conftest.err held 46 of these lines plus the loader's, so checks
+	 * that treat stderr as failure reported "something wrong with LDFLAGS". Opt in with DARLING_THREAD_DIAG. */
+	static int g_enabled = -1;
+	if (g_enabled < 0) {
+		const char* flag = getenv("DARLING_THREAD_DIAG");
+		g_enabled = (flag != NULL && *flag != '\0' && *flag != '0') ? 1 : 0;
+	}
+	if (!g_enabled) { return; }
 	static int g_marks = 0;
 	/* MEASURED INSTRUMENT DEFECT: a bound of 48 was reached by the PASSING runs too (12 creations x 4 marks), so
 	 * every count read off a failing run was truncated by my own budget, not by the failure, and the first reading
